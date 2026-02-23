@@ -1,0 +1,277 @@
+name: CD - Continuous Deployment
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      backend-image: ${{ steps.meta-backend.outputs.tags }}
+      frontend-image: ${{ steps.meta-frontend.outputs.tags }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Backend metadata
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          target: production
+          push: true
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract Frontend metadata
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          target: production
+          push: true
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}
+            NEXT_PUBLIC_WS_URL=${{ secrets.NEXT_PUBLIC_WS_URL }}
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://netherlist.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          # Copy docker-compose.prod.yml to server
+          scp docker-compose.prod.yml $SERVER_USER@$SERVER_HOST:~/netherlist/
+
+          # SSH into server and deploy
+          ssh $SERVER_USER@$SERVER_HOST << 'EOF'
+            cd ~/netherlist
+            
+            # Pull latest images
+            docker-compose -f docker-compose.prod.yml pull
+            
+            # Stop old containers
+            docker-compose -f docker-compose.prod.yml down
+            
+            # Start new containers
+            docker-compose -f docker-compose.prod.yml up -d
+            
+            # Run database migrations
+            docker-compose -f docker-compose.prod.yml exec -T backend npx prisma migrate deploy
+            
+            # Clean up old images
+            docker image prune -af
+          EOF
+
+      - name: Health check
+        run: |
+          sleep 30
+          curl -f https://api.netherlist.com/health || exit 1
+          curl -f https://netherlist.com || exit 1
+
+      - name: Notify deployment success
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "✅ Deployment to production successful!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *Deployment Successful*\n\nEnvironment: Production\nCommit: ${{ github.sha }}\nAuthor: ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+
+      - name: Notify deployment failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "❌ Deployment to production failed!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *Deployment Failed*\n\nEnvironment: Production\nCommit: ${{ github.sha }}\nAuthor: ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+
+  # Alternative: Deploy to Kubernetes
+  deploy-k8s:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: false  # Enable if using Kubernetes
+    environment:
+      name: production-k8s
+      url: https://netherlist.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl set image deployment/backend backend=${{ needs.build-and-push.outputs.backend-image }}
+          kubectl set image deployment/frontend frontend=${{ needs.build-and-push.outputs.frontend-image }}
+          
+          kubectl rollout status deployment/backend
+          kubectl rollout status deployment/frontend
+
+  # Alternative: Deploy to AWS ECS
+  deploy-ecs:
+    name: Deploy to AWS ECS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: false  # Enable if using AWS ECS
+    environment:
+      name: production-ecs
+      url: https://netherlist.com
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service --cluster netherlist-cluster --service backend --force-new-deployment
+          aws ecs update-service --cluster netherlist-cluster --service frontend --force-new-deployment
+
+  # Database Backup
+  backup-database:
+    name: Backup Production Database
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Create database backup
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          ssh $SERVER_USER@$SERVER_HOST << 'EOF'
+            cd ~/netherlist
+            
+            # Create backup
+            BACKUP_FILE="backup_$(date +%Y%m%d_%H%M%S).sql.gz"
+            docker-compose -f docker-compose.prod.yml exec -T postgres \
+              pg_dump -U $POSTGRES_USER $POSTGRES_DB | gzip > ~/backups/$BACKUP_FILE
+            
+            # Upload to S3 (optional)
+            # aws s3 cp ~/backups/$BACKUP_FILE s3://netherlist-backups/
+            
+            # Keep only last 7 days of backups
+            find ~/backups -name "backup_*.sql.gz" -mtime +7 -delete
+          EOF

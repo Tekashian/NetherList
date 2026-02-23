@@ -1,0 +1,154 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  username  String   @unique @db.VarChar(20)
+  email     String   @unique @db.VarChar(255)
+  googleId  String   @unique @db.VarChar(255)
+  avatar    String?  @db.Text
+  battleTag String?  @db.VarChar(50)
+  bio       String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  items                 Item[]
+  purchasedTransactions Transaction[] @relation("BuyerTransactions")
+  soldTransactions      Transaction[] @relation("SellerTransactions")
+  reportedTransactions  Transaction[] @relation("ReportedTransactions")
+  sentMessages          Message[]
+  ratingsGiven          Rating[]      @relation("RaterRatings")
+  ratingsReceived       Rating[]      @relation("RatedUserRatings")
+  reputation            UserReputation?
+
+  @@index([email])
+  @@index([username])
+  @@map("users")
+}
+
+model Item {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  itemData    Json     // JSONB in PostgreSQL
+  price       Json     // JSONB in PostgreSQL
+  description String?  @db.Text
+  realm       String   @db.VarChar(20)
+  gameMode    String   @db.VarChar(30)
+  rawText     String   @db.Text
+  status      String   @default("active") @db.VarChar(20)
+  views       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@index([realm, gameMode])
+  @@map("items")
+}
+
+model Transaction {
+  id               String    @id @default(uuid()) @db.Uuid
+  itemId           String    @db.Uuid
+  buyerId          String    @db.Uuid
+  sellerId         String    @db.Uuid
+  status           String    @default("pending") @db.VarChar(20)
+  buyerConfirmed   Boolean   @default(false)
+  sellerConfirmed  Boolean   @default(false)
+  buyerNotes       String?   @db.Text
+  sellerNotes      String?   @db.Text
+  reportedBy       String?   @db.Uuid
+  reportReason     String?   @db.Text
+  reportDetails    String?   @db.Text
+  reportedAt       DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Relations
+  item     Item      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  buyer    User      @relation("BuyerTransactions", fields: [buyerId], references: [id], onDelete: Cascade)
+  seller   User      @relation("SellerTransactions", fields: [sellerId], references: [id], onDelete: Cascade)
+  reporter User?     @relation("ReportedTransactions", fields: [reportedBy], references: [id], onDelete: SetNull)
+  messages Message[]
+  ratings  Rating[]
+
+  @@index([itemId])
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("transactions")
+}
+
+model Message {
+  id            String   @id @default(uuid()) @db.Uuid
+  transactionId String   @db.Uuid
+  senderId      String   @db.Uuid
+  content       String   @db.Text
+  read          Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  // Relations
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  sender      User        @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+  @@index([senderId])
+  @@index([createdAt])
+  @@index([read])
+  @@map("messages")
+}
+
+model Rating {
+  id            String   @id @default(uuid()) @db.Uuid
+  transactionId String   @db.Uuid
+  raterId       String   @db.Uuid
+  ratedUserId   String   @db.Uuid
+  rating        Int
+  comment       String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  // Relations
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  rater       User        @relation("RaterRatings", fields: [raterId], references: [id], onDelete: Cascade)
+  ratedUser   User        @relation("RatedUserRatings", fields: [ratedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([transactionId, raterId])
+  @@index([ratedUserId])
+  @@index([transactionId])
+  @@index([createdAt(sort: Desc)])
+  @@map("ratings")
+}
+
+model UserReputation {
+  userId                String   @id @db.Uuid
+  averageRating         Decimal  @default(0) @db.Decimal(3, 2)
+  totalRatings          Int      @default(0)
+  rating5Count          Int      @default(0)
+  rating4Count          Int      @default(0)
+  rating3Count          Int      @default(0)
+  rating2Count          Int      @default(0)
+  rating1Count          Int      @default(0)
+  completedTransactions Int      @default(0)
+  lastUpdated           DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_reputation")
+}
