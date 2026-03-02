@@ -46,7 +46,7 @@ app.get('/health', (_req, res) => {
 });
 
 // API routes
-app.use('/auth', authRoutes);
+app.use('/api/v1/auth', authRoutes);
 
 // 404 handler
 app.use((req, res) => {
