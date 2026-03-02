@@ -2,6 +2,8 @@ import express from 'express';
 import passport from '../config/passport';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
+import { authMiddleware, AuthRequest } from '../middleware/auth.middleware';
+import { asyncHandler } from '../types';
 
 const router = express.Router();
 
@@ -53,37 +55,16 @@ router.get(
  * Get current user
  * GET /auth/me
  */
-router.get('/me', async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized',
-        message: 'No token provided',
-      });
-    }
-
-    const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, env.JWT_SECRET) as any;
-
+router.get(
+  '/me',
+  authMiddleware,
+  asyncHandler(async (req: AuthRequest, res) => {
     res.json({
       success: true,
-      data: {
-        id: decoded.id,
-        email: decoded.email,
-        username: decoded.username,
-      },
+      data: req.user,
     });
-  } catch (error) {
-    return res.status(401).json({
-      success: false,
-      error: 'Unauthorized',
-      message: 'Invalid or expired token',
-    });
-  }
-});
+  }),
+);
 
 /**
  * Logout (optional - token blacklist would go here)

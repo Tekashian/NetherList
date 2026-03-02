@@ -4,7 +4,12 @@ import helmet from 'helmet';
 import session from 'express-session';
 import passport from './config/passport';
 import { env } from './config/env';
-import authRoutes from './routes/auth.routes';
+import { errorHandler } from './middleware/error.middleware';
+import authRoutes         from './routes/auth.routes';
+import itemsRoutes        from './routes/items.routes';
+import transactionsRoutes from './routes/transactions.routes';
+import messagesRoutes     from './routes/messages.routes';
+import usersRoutes        from './routes/users.routes';
 
 const app = express();
 
@@ -45,27 +50,23 @@ app.get('/health', (_req, res) => {
   });
 });
 
-// API routes
-app.use('/api/v1/auth', authRoutes);
+// ── API routes ────────────────────────────────────────────────────────────────
+app.use('/api/v1/auth',         authRoutes);
+app.use('/api/v1/items',        itemsRoutes);
+app.use('/api/v1/transactions', transactionsRoutes);
+app.use('/api/v1/messages',     messagesRoutes);
+app.use('/api/v1/users',        usersRoutes);
 
-// 404 handler
+// ── 404 ────────────────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    error: 'Not Found',
-    message: `Cannot ${req.method} ${req.path}`,
+    error: `Cannot ${req.method} ${req.path}`,
   });
 });
 
-// Error handler
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('❌ Error:', err);
-  res.status(500).json({
-    success: false,
-    error: 'Internal Server Error',
-    message: env.NODE_ENV === 'development' ? err.message : 'Something went wrong',
-  });
-});
+// ── Centralised error handler (must be last) ───────────────────────────────────
+app.use(errorHandler);
 
 // Start server
 const PORT = parseInt(env.PORT);

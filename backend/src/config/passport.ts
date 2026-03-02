@@ -30,7 +30,7 @@ passport.use(
             email.split('@')[0];
 
           // Check if username already exists, if so append random number
-          let finalUsername: string = username;
+          let finalUsername: string = username ?? email.split('@')[0] ?? 'user';
           const existingUser = await prisma.user.findUnique({
             where: { username: finalUsername },
           });
